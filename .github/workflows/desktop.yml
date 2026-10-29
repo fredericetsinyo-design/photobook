@@ -23,9 +23,9 @@ jobs:
             args: "--target universal-apple-darwin --bundles dmg"
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -44,8 +44,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}-test', github.run_number) }}
-          releaseName: "PhotoBook ${{ github.ref_type == 'tag' && github.ref_name || 'test' }}"
+          tagName: v__VERSION__
+          releaseName: "PhotoBook __VERSION__"
           releaseBody: "Installateurs PhotoBook. Windows : PhotoBook_x64-setup.exe. macOS : fichier .dmg."
           releaseDraft: true
           prerelease: false
