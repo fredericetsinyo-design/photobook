@@ -1,6 +1,6 @@
 [package]
 name = "photobook"
-version = "0.3.0"
+version = "0.4.0"
 description = "PhotoBook — planches photo et collages automatiques (Fredy Photography)"
 authors = ["Fredy Photography"]
 edition = "2021"

@@ -10,9 +10,13 @@ import "@fontsource/great-vibes/latin-400.css";
 import "@fontsource/anton/latin-400.css";
 import "./index.css";
 import App from "./App.tsx";
+import { ClientViewer } from "./components/ClientViewer";
+
+// Lien client : #album=JETON → visionneuse seule (aucun accès au reste de l'application)
+const m = location.hash.match(/^#album=([A-Za-z0-9_-]{16,})$/);
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    {m ? <ClientViewer token={m[1]} /> : <App />}
   </StrictMode>,
 );

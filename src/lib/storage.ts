@@ -13,6 +13,7 @@ export interface StoredProject {
   selected: string[];
   star: string | null;
   cover?: Blob; // miniature de la 1re page pour la liste
+  albums?: import("./proofing").SentAlbum[]; // albums envoyés aux clients (avec leur clé album)
 }
 export interface StoredPhoto { id: string; projectId: string; name: string; width: number; height: number; blob: Blob }
 

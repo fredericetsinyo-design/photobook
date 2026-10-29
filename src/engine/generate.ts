@@ -2,6 +2,12 @@
 import type { Library, Template, PageDoc, PhotoMeta, ResolvedSlot } from "./types";
 import { resolveSlots, rng, pageSizeMm } from "./layout";
 
+/** Catégories retenues : "all", une catégorie, ou une liste (liste vide = toutes). */
+export type Cats = string | string[];
+export const inCats = (cats: Cats, c: string) => (Array.isArray(cats) ? cats.length === 0 || cats.includes(c) : cats === "all" || cats === c);
+const hasProof = (cats: Cats) => (Array.isArray(cats) ? cats.includes("proof") : cats === "proof");
+export interface PerPage { min: number; max: number }
+
 let counter = 0;
 export const uid = (p = "p") => `${p}${Date.now().toString(36)}${(counter++).toString(36)}`;
 
@@ -10,10 +16,10 @@ export function slotCount(lib: Library, t: Template, formatId: string, n = 6): n
   return resolveSlots(lib, t, formatId, { margin: t.defaults?.margin ?? 8, gutter: t.defaults?.gutter ?? 3, seed: 1 }).length;
 }
 
-export function compatible(lib: Library, formatId: string, category: string, orientation: "all" | "portrait" | "landscape" | "square"): Template[] {
+export function compatible(lib: Library, formatId: string, category: Cats, orientation: "all" | "portrait" | "landscape" | "square"): Template[] {
   return lib.templates.filter((t) => {
     if (!t.formats.includes(formatId)) return false;
-    if (category !== "all" && t.category !== category) return false;
+    if (!inCats(category, t.category)) return false;
     if (orientation !== "all") {
       const { w, h } = pageSizeMm(lib, t, formatId);
       const o = Math.abs(w - h) < 1 ? "square" : w > h ? "landscape" : "portrait";
@@ -81,7 +87,7 @@ function slotAspect(s: ResolvedSlot, all: ResolvedSlot[], PW: number, PH: number
 }
 
 /** Propositions variées pour une seule page à partir de la sélection. */
-export function proposals(lib: Library, photos: PhotoMeta[], formatId: string, category: string, orientation: "all" | "portrait" | "landscape" | "square", count: number, seedBase: number): PageDoc[] {
+export function proposals(lib: Library, photos: PhotoMeta[], formatId: string, category: Cats, orientation: "all" | "portrait" | "landscape" | "square", count: number, seedBase: number): PageDoc[] {
   const n = photos.length;
   const cands = compatible(lib, formatId, category, orientation)
     .map((t) => ({ t, k: slotCount(lib, t, formatId, n) }))
@@ -109,7 +115,7 @@ export function proposals(lib: Library, photos: PhotoMeta[], formatId: string, c
 }
 
 /** Compose tout le projet : répartit toutes les photos sur des pages successives. */
-export function autoPaginate(lib: Library, photos: PhotoMeta[], formatId: string, category: string, orientation: "all" | "portrait" | "landscape" | "square", seedBase: number): PageDoc[] {
+export function autoPaginate(lib: Library, photos: PhotoMeta[], formatId: string, category: Cats, orientation: "all" | "portrait" | "landscape" | "square", seedBase: number): PageDoc[] {
   const cands = compatible(lib, formatId, category, orientation).filter((t) => !t.repeat && !t.sameImage && !t.background?.photo);
   if (!cands.length) return [];
   const rnd = rng(seedBase + 101);
@@ -152,16 +158,16 @@ function orientationOf(lib: Library, t: Template, formatId: string): "portrait" 
 }
 
 /** Modèles utilisables pour une mise en page automatique (hors planches contact, pochettes et cœurs à nombre fixe). */
-function autoCandidates(lib: Library, formatId: string, category: string, pres: Presentation) {
-  const base = lib.templates.filter((t) => t.formats.includes(formatId) && (category === "all" || t.category === category)
-    && !t.sameImage && !(t.repeat && category !== "proof") && t.generator !== "heart-scatter" && t.generator !== "heart-grid");
+function autoCandidates(lib: Library, formatId: string, category: Cats, pres: Presentation) {
+  const base = lib.templates.filter((t) => t.formats.includes(formatId) && inCats(category, t.category)
+    && !t.sameImage && !(t.repeat && !hasProof(category)) && t.generator !== "heart-scatter" && t.generator !== "heart-grid");
   const fit = (t: Template) => { const o = orientationOf(lib, t, formatId); return pres === "both" || o === pres || o === "square"; };
   const list = base.filter(fit);
   return { list: list.length ? list : base, fallback: !list.length && base.length > 0 };
 }
 
 export function planProject(lib: Library, photos: PhotoMeta[], pageCount: number, formatId: string, pres: Presentation,
-  category: string, mode: "auto" | "manual", seedBase: number): ProjectPlan {
+  category: Cats, mode: "auto" | "manual", seedBase: number, perPage?: PerPage | null): ProjectPlan {
   const { list: cands, fallback } = autoCandidates(lib, formatId, category, pres);
   const P = Math.max(1, Math.round(pageCount));
   const rnd = rng(seedBase + 977);
@@ -178,6 +184,7 @@ export function planProject(lib: Library, photos: PhotoMeta[], pageCount: number
       let s = Math.abs(k - want) * 3;
       if (mustFit && k < want) s += 100; // la dernière page doit tout accueillir
       if (k > avail) s += 60 + (k - avail) * 5; // éviter de répéter des photos quand il en reste assez
+      if (perPage && (k < perPage.min || k > perPage.max)) s += 30 + Math.min(Math.abs(k - perPage.min), Math.abs(k - perPage.max)) * 4; // nombre de photos par page demandé
       if (t.generator === "justified-rows") s += 2.5; // mosaïque auto : bon joker, mais on préfère des modèles dessinés
       s += (used.get(t.id) ?? 0) * 2.2; // variété
       if (prev && prev.id === t.id) s += 6;
@@ -190,7 +197,7 @@ export function planProject(lib: Library, photos: PhotoMeta[], pageCount: number
   if (mode === "manual") {
     // pages vides, modèles variés de 3 à 6 emplacements
     for (let i = 0; i < P; i++) {
-      const t = pick(3 + (i % 4), i, false);
+      const t = pick(perPage ? perPage.min + (i % (perPage.max - perPage.min + 1)) : 3 + (i % 4), i, false);
       used.set(t.id, (used.get(t.id) ?? 0) + 1);
       pages.push(fillTemplate(lib, t, formatId, [], seedBase + i));
     }
@@ -201,7 +208,8 @@ export function planProject(lib: Library, photos: PhotoMeta[], pageCount: number
   let repeated = false;
   for (let i = 0; i < P; i++) {
     const remainingPages = P - i;
-    const want = Math.max(1, Math.round(rest.length / remainingPages) || 1);
+    let want = Math.max(1, Math.round(rest.length / remainingPages) || 1);
+    if (perPage) want = Math.min(perPage.max, Math.max(perPage.min, want));
     const last = remainingPages === 1;
     // garder au moins une photo pour chaque page restante
     const avail = Math.max(1, rest.length - (remainingPages - 1));
@@ -237,4 +245,9 @@ export function photoUsage(lib: Library, pages: PageDoc[]): Map<string, { count:
     }
   });
   return m;
+}
+
+/** Nombre de pages conseillé pour n photos avec une plage de photos par page. */
+export function pagesFor(n: number, perPage: PerPage): { min: number; max: number } {
+  return { min: Math.max(1, Math.ceil(n / perPage.max)), max: Math.max(1, Math.ceil(n / perPage.min)) };
 }

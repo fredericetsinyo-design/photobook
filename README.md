@@ -3,7 +3,7 @@
 Application de création automatique de planches photo, de pages d'album et de collages prêts à imprimer.
 Un seul code source produit trois versions : **Web**, **PWA installable** et **application de bureau** (Windows, macOS).
 
-Version : 0.3.0
+Version : 0.4.0
 
 ---
 
@@ -72,7 +72,32 @@ Les projets enregistrés sont conservés d'une version à l'autre.
 
 ---
 
-## 6. Architecture
+## 6. Nouveautés 0.4.0
+
+**Réglages du projet à tout moment** (bouton « ☰ Réglages du projet ») : format, nombre de pages, présentation,
+nombre de photos par page (automatique ou de X à Y), type de séance et catégories de collage. « Recomposer » refait
+toutes les pages automatiquement ; « Annuler la recomposition » revient à la version précédente. « Nouveau projet »
+repart d'un projet vide (le projet en cours reste enregistré).
+
+**Types de séance** : mariage, couple, famille, grossesse & naissance, portrait, scolaire, cérémonie & fête,
+église & culte, entreprise, réseaux sociaux, planche de sélection. Chacun coche les catégories adaptées et propose
+un nombre de photos par page ; tout reste modifiable.
+
+**Validation par le client** (bouton « ✉ Client ») :
+- envoi des pages en épreuve (1600 px, filigrane) sur un lien privé ; e-mail préparé dans la messagerie du photographe, ou WhatsApp ;
+- le client ne voit que son album : il valide chaque page, épingle des remarques sur les photos, puis valide l'album
+  ou demande des modifications ; après sa réponse, l'album est verrouillé ;
+- le photographe suit les consultations, lit et coche les remarques, répond, prolonge le lien ;
+- protections : pas de téléchargement, images dessinées sur canevas (aucune image enregistrable), clic droit / copie /
+  impression bloqués, album masqué hors focus et lors des captures détectables, filigrane au nom du client.
+  Aucune page Web ne peut empêcher totalement une capture d'écran (surtout sur téléphone) : la basse résolution et
+  le filigrane rendent une capture inutilisable pour un tirage.
+- serveur : voir `supabase/README.md`.
+
+**Affichage multi-écrans** : très grand écran, ordinateur, tablette (panneau Photos & modèles en tiroir),
+téléphone portrait (barre d'onglets en bas) et paysage (page à gauche, commandes à droite).
+
+## 7. Architecture
 
 ```
 src/
@@ -102,7 +127,7 @@ Trois niveaux séparés, comme prévu dans le cahier des charges :
 Ajouter une entrée dans `src/engine/templates.json` (voir le champ `notes` en tête du fichier pour le format), puis `npm run build`.
 Aucun autre fichier à modifier.
 
-## 7. Tests réalisés (version 0.3.0)
+## 8. Tests réalisés
 
 - Export A4 300 DPI : PNG de 2480 × 3508 px, 300 DPI inscrits ; pages PDF de 210 × 297 mm exactement ; ZIP complet (PNG, PDF par page, PDF multipage).
 - Netteté : une photo de 6000 × 4000 px reste nette à l'export (décodage depuis l'original, pas depuis l'aperçu).
@@ -111,7 +136,11 @@ Aucun autre fichier à modifier.
 - Hors connexion : rechargement sans réseau, polices, import, composition, sauvegarde, export PDF et reprise de projet fonctionnent.
 - Reprise : après rechargement, le projet se rouvre avec ses pages et ses photos.
 
-## 8. Évolutions prévues
+- Réglages : recomposition en 8 pages de 4 photos puis annulation (retour aux 6 pages d'origine).
+- Validation client : 15 contrôles de sécurité SQL (accès anonyme refusé, mauvaises clés, lien expiré, verrouillage après réponse, aucun secret en clair) et parcours complet dans le navigateur (envoi, consultation, remarques, décision, suivi).
+- Affichage : très grand écran, ordinateur, tablette, téléphone portrait et paysage.
+
+## 9. Évolutions prévues
 
 Détection de visages pour le recadrage automatique · modèles personnalisés enregistrés par l'utilisateur · logo et identité visuelle du studio ·
 synchronisation facultative entre appareils (avec gestion des conflits) · mise à jour automatique de l'application de bureau ·

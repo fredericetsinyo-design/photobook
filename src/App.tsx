@@ -8,14 +8,18 @@ import { importFiles, type PhotoItem } from "./lib/photos";
 import { exportPages, saveFile, safeName, type ExportOptions } from "./lib/export";
 import { listProjects, saveProject, savePhotos, loadPhotos, deleteProject, askPersistence, storageAvailable, type StoredProject } from "./lib/storage";
 import { PageCanvas, usePageGeometry } from "./components/PageCanvas";
+import { ProjectSetup } from "./components/ProjectSetup";
+import { ClientAlbums } from "./components/ClientAlbums";
+import type { SentAlbum } from "./lib/proofing";
+import { defaultSettings, migrateSettings, type ProjectSettings } from "./lib/project";
+import { EVENT_TYPES } from "./engine/events";
 import { useInstall, useOnline, useServiceWorker, isTauri, desktopPickFolder } from "./lib/platform";
 
 const lib = libJson as unknown as Library;
 type MobileTab = "photos" | "modeles" | "reglages" | "pages";
 type Usage = Map<string, { count: number; pages: number[] }>;
 
-export interface ProjectSettings { pageCount: number; formatId: string; pres: Presentation; category: string; mode: "auto" | "manual"; name: string }
-const today = () => new Date().toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" });
+
 
 const SWATCHES = [
   { c: "#ffffff", n: "Blanc" }, { c: "#ECF4F7", n: "Alice Blue" }, { c: "#39404B", n: "Charcoal" },
@@ -40,7 +44,11 @@ const plural = (n: number, w: string, ws = w + "s") => `${n} ${n > 1 ? ws : w}`;
 
 export default function App() {
   const vp = useViewport();
-  const mobile = vp.w < 900;
+  // mise en page selon l'écran : très grand écran, ordinateur, tablette, téléphone (portrait ou paysage)
+  const phoneLand = vp.w > vp.h && vp.h < 560;
+  const layout: "xl" | "desktop" | "tablet" | "phone" | "phoneLand" = phoneLand ? "phoneLand" : vp.w < 900 ? "phone" : vp.w < 1180 ? "tablet" : vp.w >= 1680 ? "xl" : "desktop";
+  const mobile = layout === "phone" || layout === "phoneLand";
+  const [leftOpen, setLeftOpen] = useState(false);
   const fontsReady = useFonts();
   const sw = useServiceWorker();
   const { canInstall, install } = useInstall();
@@ -50,17 +58,20 @@ export default function App() {
   const [photos, setPhotos] = useState<PhotoItem[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [star, setStar] = useState<string | null>(null);
-  const [settings, setSettings] = useState<ProjectSettings>({ pageCount: 10, formatId: "A4", pres: "both", category: "all", mode: "auto", name: `Projet du ${today()}` });
+  const [settings, setSettings] = useState<ProjectSettings>(defaultSettings);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error" | "off">("idle");
   const [recent, setRecent] = useState<StoredProject[]>([]);
   const [exportOpen, setExportOpen] = useState(false);
-  const [category, setCategory] = useState("all"); // filtre des modèles et propositions
+  const [albums, setAlbums] = useState<SentAlbum[]>([]);
+  const [clientsOpen, setClientsOpen] = useState(false);
+  const [category, setCategory] = useState("project"); // filtre des modèles et propositions : « project » = catégories du projet
+  const [undo, setUndo] = useState<{ pages: PageDoc[]; settings: ProjectSettings } | null>(null);
   const [pages, setPages] = useState<PageDoc[]>([]);
   const [current, setCurrent] = useState<string | null>(null);
   const [selSlot, setSelSlot] = useState<number | null>(null);
   const [props, setProps] = useState<{ list: PageDoc[]; seed: number; mode: "add" | "replace" } | null>(null);
-  const [wizard, setWizard] = useState(true);
+  const [wizard, setWizard] = useState<null | "new" | "edit">("new");
   const [busy, setBusy] = useState<{ label: string; done: number; total: number } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [leftTab, setLeftTab] = useState<"photos" | "modeles">("photos");
@@ -73,6 +84,7 @@ export default function App() {
   const [dragOver, setDragOver] = useState(false);
 
   const formatId = settings.formatId;
+  const effCats = category === "project" ? settings.categories : category;
   const refreshRecent = useCallback(() => { listProjects().then(setRecent).catch(() => setSaveState("off")); }, []);
   useEffect(() => { storageAvailable().then((ok) => { if (ok) refreshRecent(); else setSaveState("off"); }); }, [refreshRecent]);
   const photoMap = useMemo(() => new Map(photos.map((p) => [p.id, p])), [photos]);
@@ -121,18 +133,33 @@ export default function App() {
   const createProject = () => {
     const { pageCount, pres, mode } = settings;
     if (mode === "auto" && !selection.length) { notify("Importez au moins une photo pour la mise en page automatique."); return; }
-    const plan = planProject(lib, selection, pageCount, formatId, pres, settings.category, mode, Date.now() % 10000);
-    if (!plan.pages.length) { notify("Aucun modèle disponible pour ce format et cette catégorie."); return; }
-    setPages(plan.pages); goTo(plan.pages[0].id); setWizard(false); setCategory(settings.category);
-    const id = uid("prj"); setProjectId(id); projectIdRef.current = id; createdAt.current = Date.now();
-    askPersistence();
-    savePhotos(id, photos).catch(() => setSaveState("error"));
-    const msgs = [`Projet créé : ${plural(plan.pages.length, "page")}`];
+    const plan = planProject(lib, selection, pageCount, formatId, pres, settings.categories, mode, Date.now() % 10000, settings.perPage);
+    if (!plan.pages.length) { notify("Aucun modèle disponible pour ces catégories et ce format. Ajoutez des catégories."); return; }
+    const recompose = wizard === "edit" && !!projectId;
+    if (recompose) setUndo({ pages, settings: lastSettings.current ?? settings });
+    setPages(plan.pages); goTo(plan.pages[0].id); setWizard(null); setCategory("project");
+    lastSettings.current = settings;
+    if (!recompose) {
+      const id = uid("prj"); setProjectId(id); projectIdRef.current = id; createdAt.current = Date.now();
+      askPersistence();
+      savePhotos(id, photos).catch(() => setSaveState("error"));
+      setUndo(null);
+    }
+    const msgs = [recompose ? `Projet recomposé : ${plural(plan.pages.length, "page")}` : `Projet créé : ${plural(plan.pages.length, "page")}`];
     if (plan.orientationFallback) msgs.push(`aucun modèle « ${PRES_LABEL[pres].toLowerCase()} » pour ce format, tous les modèles ont été utilisés`);
     if (plan.unused.length) msgs.push(`${plural(plan.unused.length, "photo non placée", "photos non placées")}`);
     if (plan.repeated) msgs.push("certaines photos sont répétées (voir l'alerte)");
     notify(msgs.join(" · "), 6000);
     if (mobile) setMTab("pages");
+  };
+  const lastSettings = useRef<ProjectSettings | null>(null);
+  const undoRecompose = () => { if (!undo) return; setPages(undo.pages); setSettings(undo.settings); lastSettings.current = undo.settings; goTo(undo.pages[0]?.id ?? null); setUndo(null); notify("Composition précédente restaurée"); };
+  const startNew = () => {
+    // le projet en cours est déjà enregistré automatiquement
+    photos.forEach((ph) => URL.revokeObjectURL(ph.thumbUrl));
+    setPhotos([]); setSelected(new Set()); setStar(null); setPages([]); goTo(null);
+    setProjectId(null); projectIdRef.current = null; setUndo(null); lastSettings.current = null;
+    setSettings(defaultSettings()); setCategory("project"); setSaveState("idle"); setWizard("new"); setAlbums([]);
   };
 
   // ----- enregistrement automatique (après 1 s sans modification)
@@ -141,12 +168,12 @@ export default function App() {
     setSaveState("saving");
     const h = window.setTimeout(() => {
       saveProject({ id: projectId, name: settings.name || "Projet sans nom", createdAt: createdAt.current, updatedAt: Date.now(), settings, pages,
-        photoIds: photos.map((p) => p.id), selected: Array.from(selected), star })
+        photoIds: photos.map((p) => p.id), selected: Array.from(selected), star, albums })
         .then(() => { setSaveState("saved"); refreshRecent(); }).catch(() => setSaveState("error"));
     }, 1000);
     return () => window.clearTimeout(h);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, pages, settings, photos, selected, star]);
+  }, [projectId, pages, settings, photos, selected, star, albums]);
 
   const resumeProject = async (p: StoredProject) => {
     try {
@@ -159,8 +186,8 @@ export default function App() {
       setBusy(null);
       photos.forEach((ph) => URL.revokeObjectURL(ph.thumbUrl));
       setPhotos(items); setSelected(new Set(p.selected.filter((id) => items.some((i) => i.id === id)))); setStar(p.star);
-      setSettings(p.settings as ProjectSettings); setPages(p.pages); setProjectId(p.id); projectIdRef.current = p.id; createdAt.current = p.createdAt;
-      goTo(p.pages[0]?.id ?? null); setWizard(false);
+      { const ms = migrateSettings(p.settings as Partial<ProjectSettings>); setSettings(ms); lastSettings.current = ms; } setUndo(null); setAlbums(p.albums ?? []); setPages(p.pages); setProjectId(p.id); projectIdRef.current = p.id; createdAt.current = p.createdAt;
+      goTo(p.pages[0]?.id ?? null); setWizard(null);
       notify(`« ${p.name} » rouvert : ${plural(p.pages.length, "page")}, ${plural(items.length, "photo")}`);
     } catch (e) { setBusy(null); notify(`Ouverture impossible : ${(e as Error).message}`); }
   };
@@ -176,7 +203,7 @@ export default function App() {
       ? Array.from(new Set(page.slots.map((s) => s.photoId).filter(Boolean))).map((id) => photoMap.get(id!)!).filter(Boolean)
       : selection;
     if (!pool.length) { notify(mode === "replace" ? "Cette page n'a pas encore de photos." : "Sélectionnez d'abord des photos."); return; }
-    const list = proposals(lib, pool, formatId, category, presToOrient(settings.pres), 12, seed);
+    const list = proposals(lib, pool, formatId, effCats, presToOrient(settings.pres), 12, seed);
     if (!list.length) { notify("Aucun modèle pour ce format et cette catégorie."); return; }
     setProps((prev) => ({ list: prev && seed > 1 ? [...prev.list, ...list] : list, seed, mode }));
   };
@@ -263,10 +290,11 @@ export default function App() {
     </div>
   );
 
-  const templatesList = useMemo(() => compatible(lib, formatId, category, presToOrient(settings.pres)), [formatId, category, settings.pres]);
+  const templatesList = useMemo(() => compatible(lib, formatId, effCats, presToOrient(settings.pres)), [formatId, effCats, settings.pres]);
   const modelsPanel = (
     <div className="panel-body">
       <select value={category} onChange={(e) => setCategory(e.target.value)}>
+        <option value="project">Catégories du projet{settings.categories.length ? ` (${settings.categories.length})` : " (toutes)"}</option>
         <option value="all">Toutes les catégories</option>
         {lib.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
       </select>
@@ -282,8 +310,9 @@ export default function App() {
       onChange={(f) => updatePage(page.id, f)} onExport={() => setExportOpen(true)} onClearSel={() => setSelSlot(null)} onRelayout={() => openProposals("replace")} />
   ) : <div className="panel-body"><p className="muted small">Créez un projet pour accéder aux réglages.</p></div>;
 
-  const dupBanner = pages.length > 0 && (dupIds.size > 0 || unusedCount > 0) && (
+  const dupBanner = pages.length > 0 && (dupIds.size > 0 || unusedCount > 0 || undo) && (
     <div className="alerts">
+      {undo && <button className="alert undo" onClick={undoRecompose}>↶ Annuler la recomposition</button>}
       {dupIds.size > 0 && (
         <button className="alert warn" onClick={nextDuplicate} title="Aller à la page suivante contenant une photo répétée">
           ⚠ {plural(dupIds.size, "photo utilisée", "photos utilisées")} plusieurs fois · page{dupPages.length > 1 ? "s" : ""} {dupPages.join(", ")} <b>Voir</b>
@@ -316,8 +345,9 @@ export default function App() {
   );
 
   // ---------- zone centrale ----------
-  const stageW = mobile ? vp.w - 24 : vp.w - 300 - 320 - 64;
-  const stageH = mobile ? Math.min(vp.h * 0.55, 560) : vp.h - 64 - 150 - 48;
+  const sideL = layout === "xl" ? 340 : 300, sideR = layout === "xl" ? 360 : layout === "tablet" ? 300 : 320;
+  const stageW = layout === "phone" ? vp.w - 24 : layout === "phoneLand" ? vp.w * 0.56 - 16 : layout === "tablet" ? vp.w - sideR - 48 : vp.w - sideL - sideR - 64;
+  const stageH = layout === "phone" ? Math.min(vp.h * 0.52, 560) : layout === "phoneLand" ? vp.h - 52 : vp.h - 64 - 150 - 48;
   const stage = (
     <div className={`stage ${dragOver ? "drag" : ""}`}
       onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); setDragOver(true); } }}
@@ -341,7 +371,7 @@ export default function App() {
           <div className="empty-mark">PB</div>
           <h2>Nouveau projet</h2>
           <p className="muted">Indiquez le nombre de pages, le format et la présentation, puis laissez PhotoBook composer les pages ou composez-les vous-même.</p>
-          <button className="btn primary" onClick={() => setWizard(true)}>Commencer</button>
+          <button className="btn primary" onClick={() => setWizard("new")}>Commencer</button>
         </div>
       )}
     </div>
@@ -352,20 +382,23 @@ export default function App() {
       {pages.length > 0 && (
         <div className="proj-chip">
           <b>{settings.name} · {plural(pages.length, "page")}</b>
+          {settings.eventType !== "all" && <span>{EVENT_TYPES.find((e) => e.id === settings.eventType)?.name}</span>}
           <span>{lib.formats.find((f) => f.id === formatId)?.name.split(" (")[0]} · {PRES_LABEL[settings.pres]}</span>
         </div>
       )}
       <div className="row gap tb-actions">
-        <button className="btn" onClick={() => setWizard(true)}>Nouveau projet</button>
+        {pages.length > 0 && <button className="btn" onClick={() => setWizard("edit")} title="Format, nombre de pages, photos par page, catégories…">☰ Réglages du projet</button>}
+        <button className="btn" onClick={pages.length ? startNew : () => setWizard("new")}>Nouveau projet</button>
         {pages.length > 0 && <SaveBadge state={saveState} />}
         {pages.length > 0 && <button className="btn" onClick={() => openProposals("add")}>Ajouter une page</button>}
+        {pages.length > 0 && <button className="btn" onClick={() => setClientsOpen(true)}>✉ Client{albums.length ? ` (${albums.length})` : ""}</button>}
         {pages.length > 0 && <button className="btn primary" onClick={() => setExportOpen(true)}>Exporter</button>}
       </div>
     </div>
   );
 
   return (
-    <div className={`app ${mobile ? "mobile" : ""}`}>
+    <div className={`app ${mobile ? "mobile" : ""} layout-${layout}`} style={{ ["--side-l" as string]: `${sideL}px`, ["--side-r" as string]: `${sideR}px` }}>
       <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" multiple hidden
         onChange={(e) => { onFiles(Array.from(e.target.files ?? [])); e.target.value = ""; }} />
       <input ref={dirRef} type="file" multiple hidden {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
@@ -377,13 +410,15 @@ export default function App() {
           {sw.offlineReady && online && <span className="chip ok" title="L'application est prête à fonctionner sans Internet">Disponible hors connexion</span>}
           {canInstall && !isTauri() && <button className="btn sm" onClick={install}>Installer l'application</button>}
         </div>
+        {layout === "tablet" && <button className="btn drawer-btn" onClick={() => setLeftOpen((v) => !v)}>{leftOpen ? "✕ Fermer" : "▤ Photos & modèles"}</button>}
         {!mobile && projectBar}
       </header>
       {mobile && <div className="glass mobile-tools">{projectBar}</div>}
 
       {!mobile ? (
         <div className="workspace">
-          <aside className="left glass">
+          {layout === "tablet" && leftOpen && <div className="drawer-backdrop" onClick={() => setLeftOpen(false)} />}
+          <aside className={`left glass ${layout === "tablet" ? `drawer ${leftOpen ? "open" : ""}` : ""}`}>
             <div className="tabs">
               <button className={leftTab === "photos" ? "on" : ""} onClick={() => setLeftTab("photos")}>Photos {photos.length ? `(${photos.length})` : ""}</button>
               <button className={leftTab === "modeles" ? "on" : ""} onClick={() => setLeftTab("modeles")}>Modèles</button>
@@ -399,11 +434,13 @@ export default function App() {
       ) : (
         <div className="m-layout">
           {dupBanner && <div className="glass m-alerts">{dupBanner}</div>}
-          {stage}
+          <div className="m-stage">{stage}</div>
+          <div className="m-side">
           <div className="tabs m-tabs glass">
             {(["photos", "modeles", "reglages", "pages"] as MobileTab[]).map((k) => (
               <button key={k} className={mTab === k ? "on" : ""} onClick={() => setMTab(k)}>
-                {{ photos: `Photos${photos.length ? ` (${photos.length})` : ""}`, modeles: "Modèles", reglages: "Réglages", pages: `Pages${pages.length ? ` (${pages.length})` : ""}` }[k]}
+                <i className="tab-ico">{{ photos: "▦", modeles: "◫", reglages: "⚙", pages: "❐" }[k]}</i>
+                <span>{{ photos: `Photos${photos.length ? ` (${photos.length})` : ""}`, modeles: "Modèles", reglages: "Réglages", pages: `Pages${pages.length ? ` (${pages.length})` : ""}` }[k]}</span>
               </button>
             ))}
           </div>
@@ -413,13 +450,21 @@ export default function App() {
             {mTab === "reglages" && settingsPanel}
             {mTab === "pages" && pagesStrip}
           </div>
+          </div>
         </div>
       )}
 
       {wizard && (
-        <Wizard settings={settings} setSettings={setSettings} photos={photos} selectionCount={selection.length} hasProject={pages.length > 0}
-          recent={recent} currentId={projectId} onResume={resumeProject} onDelete={removeProject}
-          onImport={() => fileRef.current?.click()} onImportDir={pickFolder} onCreate={createProject} onClose={() => setWizard(false)} mobile={mobile} />
+        <ProjectSetup mode={wizard} settings={settings} setSettings={setSettings} photos={photos} selectionCount={selection.length}
+          pagesInProject={pages.length} formatChanged={!!pages[0] && pages[0].formatId !== settings.formatId} hasProject={pages.length > 0} recent={recent} currentId={projectId} onResume={resumeProject} onDelete={removeProject}
+          onImport={() => fileRef.current?.click()} onImportDir={pickFolder} onCreate={createProject}
+          onSaveOnly={() => { lastSettings.current = settings; setWizard(null); notify("Réglages enregistrés, pages conservées"); }}
+          onClose={() => { if (wizard === "edit" && lastSettings.current) setSettings(lastSettings.current); setWizard(null); }} mobile={mobile} />
+      )}
+
+      {clientsOpen && pages.length > 0 && (
+        <ClientAlbums lib={lib} pages={pages} photos={photoMap} projectName={settings.name} albums={albums} onAlbums={setAlbums} mobile={mobile}
+          onClose={() => setClientsOpen(false)} onGoToPage={(n) => { setClientsOpen(false); goTo(pages[n - 1]?.id ?? null); }} />
       )}
 
       {exportOpen && pages.length > 0 && (
@@ -465,120 +510,6 @@ export default function App() {
       )}
       {toast && <div className="toast glass">{toast}</div>}
       {sw.update && <div className="update glass"><span>Une nouvelle version de PhotoBook est prête.</span><button className="btn sm primary" onClick={() => sw.update?.()}>Mettre à jour</button></div>}
-    </div>
-  );
-}
-
-// ---------- assistant de création de projet ----------
-function Wizard({ settings, setSettings, photos, selectionCount, hasProject, onImport, onImportDir, onCreate, onClose, mobile, recent, currentId, onResume, onDelete }: {
-  settings: ProjectSettings; setSettings: (f: (s: ProjectSettings) => ProjectSettings) => void; photos: PhotoItem[]; selectionCount: number;
-  hasProject: boolean; onImport: () => void; onImportDir: () => void; onCreate: () => void; onClose: () => void; mobile: boolean;
-  recent: StoredProject[]; currentId: string | null; onResume: (p: StoredProject) => void; onDelete: (p: StoredProject) => void;
-}) {
-  const [delAsk, setDelAsk] = useState<string | null>(null);
-  const others = recent.filter((p) => p.id !== currentId);
-  const [confirm, setConfirm] = useState(false);
-  const set = <K extends keyof ProjectSettings>(k: K, v: ProjectSettings[K]) => setSettings((s) => ({ ...s, [k]: v }));
-  const fmt = lib.formats.find((f) => f.id === settings.formatId)!;
-  const square = Math.abs(fmt.mm[0] - fmt.mm[1]) < 1;
-  const P = Math.max(1, settings.pageCount || 1), n = selectionCount;
-  const per = n / P;
-  const nTpl = compatible(lib, settings.formatId, settings.category, square || fmt.spread ? "all" : presToOrient(settings.pres)).length;
-  let note = "";
-  if (settings.mode === "auto") {
-    if (!n) note = "Importez vos photos pour lancer la mise en page automatique.";
-    else if (n < P) note = `Moins de photos que de pages : certaines photos seront répétées. PhotoBook vous le signalera.`;
-    else note = `${n} photos sur ${plural(P, "page")} : environ ${Math.floor(per)}${Math.ceil(per) !== Math.floor(per) ? ` à ${Math.ceil(per)}` : ""} photo${Math.ceil(per) > 1 ? "s" : ""} par page.`;
-    if (n && per > 30) note += " C'est beaucoup par page : augmentez le nombre de pages pour des photos plus grandes.";
-  } else note = `${plural(P, "page vide", "pages vides")} avec des modèles variés, à remplir en glissant vos photos.`;
-  return (
-    <div className="overlay" onClick={hasProject ? onClose : undefined}>
-      <div className="sheet glass wizard" onClick={(e) => e.stopPropagation()}>
-        <div className="row between sheet-head">
-          <div><h3>Nouveau projet</h3><p className="muted small">Définissez votre projet, PhotoBook s'occupe du reste.</p></div>
-          {hasProject && <button className="btn ghost" onClick={onClose}>Fermer</button>}
-        </div>
-        <div className="wiz-body">
-          {others.length > 0 && (
-            <section>
-              <h4>Reprendre un projet</h4>
-              <div className="recent">
-                {others.slice(0, 6).map((p) => (
-                  <div key={p.id} className="recent-item">
-                    <div className="grow"><b>{p.name}</b><span className="small muted">{plural(p.pages.length, "page")} · {plural(p.photoIds.length, "photo")} · modifié le {new Date(p.updatedAt).toLocaleDateString("fr-FR")} à {new Date(p.updatedAt).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}</span></div>
-                    {delAsk === p.id
-                      ? <><button className="btn sm danger" onClick={() => { onDelete(p); setDelAsk(null); }}>Supprimer</button><button className="btn sm ghost" onClick={() => setDelAsk(null)}>Annuler</button></>
-                      : <><button className="btn sm primary" onClick={() => onResume(p)}>Reprendre</button><button className="btn sm ghost" title="Supprimer" onClick={() => setDelAsk(p.id)}>✕</button></>}
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-          <section>
-            <h4><span className="num">1</span> Photos</h4>
-            <div className="row gap wrap">
-              <button className="btn primary" onClick={onImport}>Importer des photos</button>
-              <button className="btn" onClick={onImportDir}>Importer un dossier</button>
-              <span className="small">{photos.length ? `${photos.length} importée${photos.length > 1 ? "s" : ""} · ${selectionCount} sélectionnée${selectionCount > 1 ? "s" : ""}` : "Aucune photo pour l'instant"}</span>
-            </div>
-            {photos.length > 0 && <div className="wiz-thumbs">{photos.slice(0, mobile ? 8 : 14).map((p) => <img key={p.id} src={p.thumbUrl} alt="" />)}{photos.length > (mobile ? 8 : 14) && <span>+{photos.length - (mobile ? 8 : 14)}</span>}</div>}
-          </section>
-          <section>
-            <h4><span className="num">2</span> Pages</h4>
-            <label className="field name-field"><span>Nom du projet</span>
-              <input type="text" value={settings.name} onChange={(e) => set("name", e.target.value)} placeholder="Mariage Aïcha & Koffi" />
-            </label>
-            <div className="wiz-grid">
-              <label className="field"><span>Nombre de pages</span>
-                <div className="stepper">
-                  <button onClick={() => set("pageCount", Math.max(1, P - 1))}>−</button>
-                  <input type="number" min={1} max={300} value={settings.pageCount} onChange={(e) => set("pageCount", Math.max(1, Math.min(300, +e.target.value || 1)))} />
-                  <button onClick={() => set("pageCount", Math.min(300, P + 1))}>＋</button>
-                </div>
-              </label>
-              <label className="field"><span>Format</span>
-                <select value={settings.formatId} onChange={(e) => set("formatId", e.target.value)}>
-                  {lib.formats.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
-                </select>
-              </label>
-              <label className="field"><span>Catégorie de modèles</span>
-                <select value={settings.category} onChange={(e) => set("category", e.target.value)}>
-                  <option value="all">Toutes les catégories</option>
-                  {lib.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
-              </label>
-            </div>
-            <div className="field"><span>Présentation</span></div>
-            <div className="seg">
-              {(["portrait", "landscape", "both"] as Presentation[]).map((p) => (
-                <button key={p} className={settings.pres === p ? "on" : ""} disabled={square || fmt.spread} onClick={() => set("pres", p)}>
-                  <i className={`ico ${p}`} />{PRES_LABEL[p]}
-                </button>
-              ))}
-            </div>
-            {(square || fmt.spread) && <p className="hint">{square ? "Format carré : la présentation ne s'applique pas." : "Double page d'album : toujours en paysage."}</p>}
-          </section>
-          <section>
-            <h4><span className="num">3</span> Mise en page</h4>
-            <div className="choices">
-              <button className={`choice ${settings.mode === "auto" ? "on" : ""}`} onClick={() => set("mode", "auto")}>
-                <b>Automatique</b><span>PhotoBook répartit toutes vos photos sur les {plural(P, "page")} avec des modèles variés. Vous retouchez ensuite page par page.</span>
-              </button>
-              <button className={`choice ${settings.mode === "manual" ? "on" : ""}`} onClick={() => set("mode", "manual")}>
-                <b>Manuelle</b><span>PhotoBook prépare les pages avec des modèles. Vous placez vous-même les photos.</span>
-              </button>
-            </div>
-            <p className={`summary ${settings.mode === "auto" && n && n < P ? "warn" : ""}`}>{note} <span className="muted">· {nTpl} modèles disponibles</span></p>
-          </section>
-        </div>
-        <div className="wiz-foot">
-          {hasProject && confirm && <span className="small warn">Le projet actuel sera remplacé.</span>}
-          <button className="btn primary big" disabled={settings.mode === "auto" && !selectionCount}
-            onClick={() => { if (hasProject && !confirm) { setConfirm(true); return; } onCreate(); }}>
-            {hasProject && confirm ? "Remplacer le projet" : settings.mode === "auto" ? `Composer ${plural(P, "page")}` : `Créer ${plural(P, "page")}`}
-          </button>
-        </div>
-      </div>
     </div>
   );
 }
