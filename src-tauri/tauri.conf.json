@@ -1,0 +1,40 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "PhotoBook",
+  "version": "0.3.0",
+  "identifier": "com.fredyphotography.photobook",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "PhotoBook — Fredy Photography",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1024,
+        "minHeight": 680,
+        "center": true,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": { "csp": null }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi", "dmg", "app", "deb"],
+    "publisher": "Fredy Photography",
+    "copyright": "© 2026 Fredy Photography",
+    "category": "Photography",
+    "shortDescription": "Planches photo et collages automatiques",
+    "longDescription": "PhotoBook compose automatiquement des planches photo, des pages d'album et des collages prêts à imprimer (PNG, PDF, ZIP), entièrement sur votre ordinateur.",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "windows": {
+      "nsis": { "languages": ["French"], "installMode": "currentUser" },
+      "wix": { "language": "fr-FR" }
+    }
+  }
+}
